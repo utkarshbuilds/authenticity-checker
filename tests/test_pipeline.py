@@ -26,6 +26,7 @@ def sample_png(tmp_path):
     return image_path
 
 
+
 def test_pipeline_analyzes_jpeg_and_logs_result(sample_jpeg, tmp_path):
     db_path = tmp_path / "pipeline.db"
 
@@ -49,10 +50,18 @@ def test_pipeline_analyzes_jpeg_and_logs_result(sample_jpeg, tmp_path):
         "AUTHENTIC", "MANIPULATED", "SYNTHETIC", "UNVERIFIABLE"
     }
 
+    # Retrieve the saved record before checking its contents.
     saved = get_analysis(result["analysis_id"], db_path)
+
     assert saved is not None
     assert saved["source_filename"] == "sample.jpg"
     assert saved["verdict"] == result["verdict"]
+
+    # Confirm the detailed analysis was persisted in SQLite.
+    assert saved["details"]["source_sha256"] == result["source_sha256"]
+    assert saved["details"]["metadata"]["width"] == 64
+    assert saved["details"]["perceptual_hash"]["binary_hash"]
+
 
 
 def test_pipeline_skips_ela_for_png(sample_png, tmp_path):

@@ -2,7 +2,7 @@
 """
 Store and retrieve authenticity-checker analysis history using SQLite.
 
-The database stores metadata and analysis results, not the original image.
+The database stores analysis metadata and results, not the original image.
 """
 
 import json
@@ -12,16 +12,14 @@ from pathlib import Path
 from typing import Any
 
 
-# Find the project's data folder regardless of the terminal's current folder.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "analysis_history.db"
 
 
 def initialize_database(db_path: str | Path = DEFAULT_DB_PATH) -> None:
-    """Create the database, table, and indexes if they do not exist."""
+    """Create the database and safely upgrade older database schemas."""
     path = Path(db_path)
 
-    # Create the parent folder when using a normal database file.
     if str(db_path) != ":memory:":
         path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -38,12 +36,23 @@ def initialize_database(db_path: str | Path = DEFAULT_DB_PATH) -> None:
                 confidence_type TEXT,
                 manipulation_score REAL,
                 evidence_json TEXT NOT NULL,
-                warnings_json TEXT NOT NULL
+                warnings_json TEXT NOT NULL,
+                details_json TEXT NOT NULL DEFAULT '{}'
             )
             """
         )
 
-        # These indexes make common history searches faster.
+        # Upgrade databases created before detailed analysis was supported.
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(analyses)")
+        }
+        if "details_json" not in columns:
+            connection.execute(
+                "ALTER TABLE analyses "
+                "ADD COLUMN details_json TEXT NOT NULL DEFAULT '{}'"
+            )
+
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_analyses_created_at "
             "ON analyses(created_at)"
@@ -61,12 +70,9 @@ def log_analysis(
     source_filename: str,
     result: dict[str, Any],
     db_path: str | Path = DEFAULT_DB_PATH,
+    analysis_details: dict[str, Any] | None = None,
 ) -> int:
-    """
-    Save one analysis and return its database ID.
-
-    `result` is expected to be the dictionary returned by fuse_scores().
-    """
+    """Save a verdict and optional detailed evidence; return its database ID."""
     if not isinstance(source_filename, str) or not source_filename.strip():
         raise ValueError("source_filename must be a non-empty string")
 
@@ -84,8 +90,15 @@ def log_analysis(
         raise TypeError("result['evidence'] must be a list")
     if not isinstance(warnings, list):
         raise TypeError("result['warnings'] must be a list")
+    if analysis_details is None:
+        analysis_details = {}
+    if not isinstance(analysis_details, dict):
+        raise TypeError("analysis_details must be a dictionary or None")
 
-    # ISO format makes the timestamp readable and sortable.
+    # Serialize before opening the connection so invalid JSON data fails early.
+    evidence_json = json.dumps(evidence)
+    warnings_json = json.dumps(warnings)
+    details_json = json.dumps(analysis_details)
     created_at = datetime.now(timezone.utc).isoformat()
 
     initialize_database(db_path)
@@ -102,9 +115,10 @@ def log_analysis(
                 confidence_type,
                 manipulation_score,
                 evidence_json,
-                warnings_json
+                warnings_json,
+                details_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 created_at,
@@ -113,8 +127,9 @@ def log_analysis(
                 result.get("confidence"),
                 result.get("confidence_type"),
                 result.get("manipulation_score"),
-                json.dumps(evidence),
-                json.dumps(warnings),
+                evidence_json,
+                warnings_json,
+                details_json,
             ),
         )
         connection.commit()
@@ -124,7 +139,7 @@ def log_analysis(
 
 
 def _row_to_dict(row: tuple[Any, ...]) -> dict[str, Any]:
-    """Convert a database row into a friendly Python dictionary."""
+    """Convert a database row into a readable Python dictionary."""
     return {
         "id": row[0],
         "created_at": row[1],
@@ -135,6 +150,7 @@ def _row_to_dict(row: tuple[Any, ...]) -> dict[str, Any]:
         "manipulation_score": row[6],
         "evidence": json.loads(row[7]),
         "warnings": json.loads(row[8]),
+        "details": json.loads(row[9]),
     }
 
 
@@ -142,7 +158,7 @@ def get_analysis(
     analysis_id: int,
     db_path: str | Path = DEFAULT_DB_PATH,
 ) -> dict[str, Any] | None:
-    """Retrieve one analysis by ID, or return None if it does not exist."""
+    """Retrieve one analysis by ID, or None if it does not exist."""
     if isinstance(analysis_id, bool) or not isinstance(analysis_id, int):
         raise TypeError("analysis_id must be an integer")
 
@@ -154,7 +170,7 @@ def get_analysis(
             """
             SELECT id, created_at, source_filename, verdict, confidence,
                    confidence_type, manipulation_score, evidence_json,
-                   warnings_json
+                   warnings_json, details_json
             FROM analyses
             WHERE id = ?
             """,
@@ -182,7 +198,7 @@ def get_recent_analyses(
             """
             SELECT id, created_at, source_filename, verdict, confidence,
                    confidence_type, manipulation_score, evidence_json,
-                   warnings_json
+                   warnings_json, details_json
             FROM analyses
             ORDER BY id DESC
             LIMIT ?

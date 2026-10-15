@@ -139,9 +139,10 @@ def analyze_content(
     # The logger stores verdict fields, evidence, warnings, and confidence.
     # Additional analyzer details are returned here for callers to inspect.
     analysis_id = log_analysis(
-        source_filename=path.name,
-        result=verdict_result,
-        db_path=db_path,
+    source_filename=path.name,
+    result=verdict_result,
+    db_path=db_path,
+    analysis_details=analysis_record,
     )
     analysis_record["analysis_id"] = analysis_id
 
