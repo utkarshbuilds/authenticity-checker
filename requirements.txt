@@ -1,0 +1,9 @@
+
+Pillow
+opencv-python
+ImageHash
+numpy
+scikit-learn
+pandas
+streamlit
+pytest
